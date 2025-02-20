@@ -7,3 +7,6 @@ Admob id automatically from capacitor.config.json file
 Make three build file for different store as per our requirement
 Based on store install various IAP plugins
 Make it to ionic project
+
+Donate to get full code including many common functions
+https://ko-fi.com/codeplay
