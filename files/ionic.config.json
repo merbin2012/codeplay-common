@@ -1,0 +1,7 @@
+{
+  "name": "merbin-test-app",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "custom"
+}

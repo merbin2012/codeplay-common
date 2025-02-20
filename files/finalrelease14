@@ -1,0 +1,493 @@
+const fs = require('fs');
+const path = require('path');
+const child_process = require('child_process');
+const readline = require('readline');
+
+// Define a mapping between store IDs and store names
+const storeNames = {
+    "1": "PlayStore",
+    "2": "SamsungStore",
+    "7": "AmazonStore"
+};
+
+const androidManifestPath = path.join("android", "app", "src", "main", "AndroidManifest.xml");
+
+
+
+const admobConfigPath = path.join('src', 'js','Ads', 'admob-ad-configuration.json');
+let admobConfig;
+try {
+    admobConfig = JSON.parse(fs.readFileSync(admobConfigPath, 'utf8'));
+} catch (err) {
+    console.error("Failed to read admob-ad-configuration.json", err);
+    process.exit(1);
+}
+
+
+
+
+const checkCommonFileStoreId=()=>{
+    const possibleConfigFiles = ['vite.config.mjs', 'vite.config.js'];
+    let viteConfigPath;
+    for (const configFile of possibleConfigFiles) {
+        const fullPath = path.resolve( configFile);
+        if (fs.existsSync(fullPath)) {
+            viteConfigPath = fullPath;
+            break;
+        }
+    }
+    
+    if (!viteConfigPath) {
+        console.error('Error: No vite.config.mjs or vite.config.js file found.');
+        process.exit(1);
+    }
+    
+        try {
+            // Read vite config file
+            const viteConfigContent = fs.readFileSync(viteConfigPath, 'utf-8');
+            
+            // Extract @common alias path
+            const aliasPattern = /'@common':\s*path\.resolve\(__dirname,\s*'(.+?)'\)/;
+            const match = viteConfigContent.match(aliasPattern);
+            
+            if (!match) {
+                console.error(`Error: @common alias not found in ${viteConfigPath}`);
+                process.exit(1);
+            }
+            
+            const commonFilePath = match[1];
+            const resolvedCommonPath = path.resolve(__dirname, commonFilePath);
+            
+            // Read the common file content
+            if (!fs.existsSync(resolvedCommonPath)) {
+                console.error(`Error: Resolved common file does not exist: ${resolvedCommonPath}`);
+                process.exit(1);
+            }
+            
+            const commonFileContent = fs.readFileSync(resolvedCommonPath, 'utf-8');
+            
+            // Check for the _storeid export line
+            const storeIdPattern = /export\s+let\s+_storeid\s*=\s*import\.meta\.env\.VITE_STORE_ID\s*\|\|\s*1\s*;/;
+            if (!storeIdPattern.test(commonFileContent)) {
+                console.error(`Error: _storeid value is wrong in ${commonFilePath}`);
+                process.exit(1);
+            }
+    
+            console.log(commonFilePath,'Success - No problem found');
+        } catch (error) {
+            console.error('Error:', error);
+            process.exit(1);
+        }
+
+}
+
+const checkIsTestingInAdmob=()=>{
+    
+    if (admobConfig.config && admobConfig.config.isTesting === true) {
+        console.error(`Problem found while generating the AAB file. Please change "isTesting: true" to "isTesting: false" in the "admob-ad-configuration.json" file.`);
+        process.exit(1); // Exit with an error code to halt the process
+    } else {
+        console.log('No problem found. "isTesting" is either already false or not defined.');
+    }
+}
+
+const addPermission_AD_ID=()=>{
+
+    const admobPluginXmlPath = path.join('node_modules', 'emi-indo-cordova-plugin-admob', 'plugin.xml');
+    
+
+    fs.access(admobPluginXmlPath, fs.constants.F_OK, (err) => {
+        if (err) {
+            isAdmobFound = false;
+        } else {
+            isAdmobFound = true;
+        }
+    });
+    
+    
+    if (isAdmobFound) {
+        // Check if AndroidManifest.xml exists
+        if (fs.existsSync(androidManifestPath)) {
+            // Read the content of AndroidManifest.xml
+            let manifestContent = fs.readFileSync(androidManifestPath, 'utf8');
+    
+            // Check if the ad_id permission already exists
+            const adIdPermission = '<uses-permission android:name="com.google.android.gms.permission.AD_ID" />';
+            if (!manifestContent.includes(adIdPermission)) {
+                console.log("ad_id permission not found. Adding to AndroidManifest.xml.");
+    
+                // Add the ad_id permission before the closing </manifest> tag
+                manifestContent = manifestContent.replace('</manifest>', `    ${adIdPermission}\n</manifest>`);
+    
+                // Write the updated manifest content back to AndroidManifest.xml
+                fs.writeFileSync(androidManifestPath, manifestContent, 'utf8');
+                console.log("ad_id permission added successfully.");
+            } else {
+                console.log("ad_id permission already exists in AndroidManifest.xml.");
+            }
+        } else {
+            console.error("AndroidManifest.xml not found at the specified path.");
+        }
+    } else {
+        console.log("\x1b[33m%s\x1b[0m", "No admob found, so permission.AD_ID is not added");
+    }
+}
+
+
+checkCommonFileStoreId();
+checkIsTestingInAdmob();
+
+
+let isAdmobFound = true;
+addPermission_AD_ID()
+
+
+
+const { playstore, samsung, amazon } = admobConfig.IAP;
+console.log(`IAP Configurations - PlayStore: ${playstore}, Samsung: ${samsung}, Amazon: ${amazon}`);
+
+
+
+
+
+
+// Get the store ID from the command line arguments
+const storeIdArg = process.argv[2]; // Get the store ID from the command line
+const storeIds = storeIdArg ? [storeIdArg] : ["1", "2", "7"]; // If a specific ID is provided, use it; otherwise, use all store IDs
+
+// Store the original minSdkVersion globally
+let originalMinSdkVersion;
+
+// Remove any existing AAB files before starting the build process
+const aabDirectory = path.join("android", "app", "build", "outputs", "bundle", "release");
+if (fs.existsSync(aabDirectory)) {
+    const files = fs.readdirSync(aabDirectory).filter(file => file.endsWith('.aab'));
+    files.forEach(file => {
+        const filePath = path.join(aabDirectory, file);
+        fs.unlinkSync(filePath);
+        console.log(`Deleted existing AAB file: ${file}`);
+    });
+}
+
+const aabOutputDir = path.join("AAB");
+if (!fs.existsSync(aabOutputDir)) {
+    fs.mkdirSync(aabOutputDir);
+    console.log(`Created directory: ${aabOutputDir}`);
+}
+
+if (fs.existsSync(aabOutputDir)) {
+    const files = fs.readdirSync(aabOutputDir).filter(file => file.endsWith('.aab'));
+    files.forEach(file => {
+        const filePath = path.join(aabOutputDir, file);
+        fs.unlinkSync(filePath);
+        console.log(`Deleted existing AAB file: ${file}`);
+    });
+}
+
+
+// Extract version code and version name from build.gradle
+const gradleFilePath = path.join("android", "app", "build.gradle");
+const gradleContent = fs.readFileSync(gradleFilePath, 'utf8');
+
+const versionCodeMatch = gradleContent.match(/versionCode\s+(\d+)/);
+const versionNameMatch = gradleContent.match(/versionName\s+"([^"]+)"/);
+
+const versionCode = versionCodeMatch ? versionCodeMatch[1] : '';
+const versionName = versionNameMatch ? versionNameMatch[1] : '';
+
+// Display the current versionCode and versionName
+console.log(`Current versionCode: ${versionCode}`);
+console.log(`Current versionName: ${versionName}`);
+
+// Create an interface for user input
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
+
+// Ask for new versionCode
+rl.question('Enter new versionCode (press enter to keep current): ', (newVersionCode) => {
+    const finalVersionCode = newVersionCode || versionCode; // Use existing if no input
+
+    // Ask for new versionName
+    rl.question('Enter new versionName (press enter to keep current): ', (newVersionName) => {
+        const finalVersionName = newVersionName || versionName; // Use existing if no input
+
+        // Log the final version details
+        console.log(`Final versionCode: ${finalVersionCode}`);
+        console.log(`Final versionName: ${finalVersionName}`);
+
+        // Update build.gradle with the new version details
+        let updatedGradleContent = gradleContent
+            .replace(/versionCode\s+\d+/, `versionCode ${finalVersionCode}`)
+            .replace(/versionName\s+"[^"]+"/, `versionName "${finalVersionName}"`);
+
+        // Check if resConfigs "en" already exists
+        const resConfigsLine = '        resConfigs "en"';
+        if (!updatedGradleContent.includes(resConfigsLine)) {
+            // Add resConfigs "en" below versionName
+            updatedGradleContent = updatedGradleContent.replace(/versionName\s+"[^"]+"/, `versionName "${finalVersionName}"\n${resConfigsLine}`);
+        } else {
+            console.log('resConfigs "en" already exists in build.gradle.');
+        }
+
+        // Write the updated gradle content back to build.gradle
+        fs.writeFileSync(gradleFilePath, updatedGradleContent, 'utf8');
+        console.log(`Updated build.gradle with versionCode: ${finalVersionCode}, versionName: ${finalVersionName}, and resConfigs "en"`);
+
+        storeIds.forEach((id) => {
+            console.log(`Building for Store ID ${id}`);
+
+            // Set the environment variable for store ID
+            process.env.VITE_STORE_ID = id;
+
+            // Conditionally set the new file name
+            let newFileName;
+            const storeName = storeNames[id];
+            
+            managePackages(storeName);
+
+            if (storeName === "SamsungStore") {
+                // For SamsungStore, rename to versionCode value only
+                newFileName = `${finalVersionCode}.aab`;
+            } else {
+                // For other stores, use the standard naming format
+                newFileName = `app-release-signed-${storeName}-b${finalVersionCode}-v${finalVersionName}.aab`;
+            }
+
+            const checkFullPath = path.join("AAB", newFileName); // Update to point to the new AAB directory
+
+            // Modify minSdkVersion in variables.gradle for SamsungStore
+            const variablesGradleFilePath = path.join("android", "variables.gradle");
+            let variablesGradleContent = fs.readFileSync(variablesGradleFilePath, 'utf8');
+
+            // Extract the current minSdkVersion
+            const minSdkVersionMatch = variablesGradleContent.match(/minSdkVersion\s*=\s*(\d+)/);
+            const currentMinSdkVersion = minSdkVersionMatch ? parseInt(minSdkVersionMatch[1], 10) : null;
+
+            // Store the original minSdkVersion (only on the first iteration)
+            if (!originalMinSdkVersion) {
+                originalMinSdkVersion = currentMinSdkVersion;
+            }
+            try {
+                // Modify the minSdkVersion based on the store
+                if (storeName === "SamsungStore" || storeName === "PlayStore") {
+                    if (currentMinSdkVersion !== 24) {
+                        variablesGradleContent = variablesGradleContent.replace(/minSdkVersion\s*=\s*\d+/, 'minSdkVersion = 24');
+                        console.log('minSdkVersion updated to 24 for SamsungStore & PlayStore');
+                        fs.writeFileSync(variablesGradleFilePath, variablesGradleContent);
+                    }
+                } else {
+                    // For PlayStore and AmazonStore, ensure minSdkVersion is originalMinSdkVersion
+                    if (currentMinSdkVersion !== originalMinSdkVersion) {
+                        variablesGradleContent = variablesGradleContent.replace(/minSdkVersion\s*=\s*\d+/, `minSdkVersion = ${originalMinSdkVersion}`);
+                        console.log(`minSdkVersion reverted to ${originalMinSdkVersion} for ${storeName}`);
+                        fs.writeFileSync(variablesGradleFilePath, variablesGradleContent);
+                    }
+                }
+
+                // Run the Node.js script to modify plugin.xml
+                if (isAdmobFound) {
+                    child_process.execSync('node buildCodeplay/modify-plugin-xml.js', { stdio: 'inherit' });
+                } else {
+                    console.log("\x1b[33m%s\x1b[0m", "Seems to Pro Version [No ads found]");
+                }
+
+                // Run the Vite build
+                child_process.execSync(`npm run build:storeid${id}`, { stdio: 'inherit' });
+
+                
+
+                // Copy the built files to the appropriate folder
+                const src = path.join("www", "*");
+                const dest = path.join("android", "app", "src", "main", "assets", "public");
+
+                // Use 'xcopy' command for Windows
+                child_process.execSync(`xcopy ${src} ${dest} /E /I /Y`, { stdio: 'inherit' });
+
+                // Build Android AAB file
+                //child_process.execSync('cd android && ./gradlew bundleRelease', { stdio: 'inherit' });
+
+
+                // Build Android AAB file with Capacitor
+                child_process.execSync('npx cap sync android', { stdio: 'inherit' });
+                child_process.execSync('npx cap build android --androidreleasetype=AAB', { stdio: 'inherit' });
+
+
+                // Rename the output AAB file
+                const oldFilePath = path.join(aabDirectory, "app-release-signed.aab");
+                if (fs.existsSync(oldFilePath)) {
+                    fs.renameSync(oldFilePath, checkFullPath);
+                    console.log(`Renamed output AAB file to: ${newFileName}`);
+                } else {
+                    console.error("AAB file not found after build.");
+                }
+
+            } catch (error) {
+                console.error(`Error during build for Store ID ${id}:`, error);
+            }
+        });
+
+        rl.close(); // Close the readline interface after all operations
+    });
+});
+
+
+
+
+
+function managePackages(store) {
+    console.log(`IAP Configurations - PlayStore: ${playstore}, Samsung: ${samsung}, Amazon: ${amazon}`);
+
+    let install = "";
+    let uninstall = "";
+
+
+
+    let manifestContent = fs.readFileSync(androidManifestPath, 'utf-8');
+    
+    const permissionsToRemove = [
+        'com.android.vending.BILLING',
+        'com.samsung.android.iap.permission.BILLING'
+    ];
+    
+    
+    permissionsToRemove.forEach(permission => {
+        const permissionRegex = new RegExp(`^\\s*<uses-permission\\s+android:name="${permission}"\\s*/?>\\s*[\r\n]?`, 'm');
+        if (permissionRegex.test(manifestContent)) {
+            manifestContent = manifestContent.replace(permissionRegex, '');
+            console.log(`Removed <uses-permission android:name="${permission}" /> from AndroidManifest.xml`);
+        }
+    });
+    
+    // Write the updated content back to the file
+    fs.writeFileSync(androidManifestPath, manifestContent, 'utf-8');
+
+
+
+    if ((playstore && store === "PlayStore") || (amazon && store === "AmazonStore")) {
+        install = '@revenuecat/purchases-capacitor';
+        uninstall = 'cordova-plugin-samsungiap';
+
+        // Update AndroidManifest.xml for PlayStore
+        if(playstore)
+            updateAndroidManifest(store, 
+                '<uses-permission android:name="com.android.vending.BILLING" />');
+
+    } else if (samsung && store === "SamsungStore") {
+        install = 'cordova-plugin-samsungiap';
+        uninstall = '@revenuecat/purchases-capacitor';
+
+        // Update AndroidManifest.xml for SamsungStore
+        updateAndroidManifest(store, 
+            '<uses-permission android:name="com.samsung.android.iap.permission.BILLING" />');
+
+    } else {
+        console.log("No valid store specified or no configurations found. Both plugins will be uninstalled.");
+        try {
+            child_process.execSync(`npm uninstall cordova-plugin-samsungiap`, { stdio: 'inherit' });
+            child_process.execSync(`npm uninstall @revenuecat/purchases-capacitor`, { stdio: 'inherit' });
+            console.log(`Both plugins uninstalled successfully.`);
+        } catch (err) {
+            console.error("Error uninstalling plugins:", err);
+        }
+        return;
+    }
+
+    console.log(`Installing ${install} and uninstalling ${uninstall} for ${store}...`);
+    try {
+        if (install) {
+            child_process.execSync(`npm install ${install}`, { stdio: 'inherit' });
+        }
+        if (uninstall) {
+            child_process.execSync(`npm uninstall ${uninstall}`, { stdio: 'inherit' });
+        }
+        console.log(`${install} installed and ${uninstall} uninstalled successfully.`);
+    } catch (err) {
+        console.error(`Error managing packages for ${store}:`, err);
+    }
+}
+
+
+
+function updateAndroidManifest(store, addPermission) {
+    try {
+        if (!fs.existsSync(androidManifestPath)) {
+            console.error("AndroidManifest.xml file not found!");
+            return;
+        }
+
+        // Read the content of the AndroidManifest.xml
+        let manifestContent = fs.readFileSync(androidManifestPath, 'utf-8');
+
+        // Normalize line endings to `\n` for consistent processing
+        manifestContent = manifestContent.replace(/\r\n/g, '\n');
+
+        // Check if the permission is already present
+        if (manifestContent.includes(addPermission.trim())) {
+            console.log(`${addPermission} is already in the AndroidManifest.xml. Skipping addition.`);
+            return; // Skip if the permission is already present
+        }
+
+        // Insert the permission before the closing </manifest> tag
+        const closingTag = '</manifest>';
+        const formattedPermission = `    ${addPermission.trim()}\n`;
+        if (manifestContent.includes(closingTag)) {
+            manifestContent = manifestContent.replace(
+                closingTag,
+                `${formattedPermission}${closingTag}`
+            );
+            console.log(`Added ${addPermission} before </manifest> tag.`);
+        } else {
+            console.warn(`</manifest> tag not found. Adding ${addPermission} at the end of the file.`);
+            manifestContent += `\n${formattedPermission}`;
+        }
+
+        // Normalize line endings back to `\r\n` and write the updated content
+        manifestContent = manifestContent.replace(/\n/g, '\r\n');
+        fs.writeFileSync(androidManifestPath, manifestContent, 'utf-8');
+        console.log(`AndroidManifest.xml updated successfully for ${store}`);
+    } catch (err) {
+        console.error(`Error updating AndroidManifest.xml for ${store}:`, err);
+    }
+}
+
+
+
+/* function updateAndroidManifest1(store, addPermission) {
+    try {
+        if (!fs.existsSync(androidManifestPath)) {
+            console.error("AndroidManifest.xml file not found!");
+            return;
+        }
+
+        let manifestContent = fs.readFileSync(androidManifestPath, 'utf-8');
+
+
+
+        // Add the required permission if not already present
+        if (!manifestContent.includes(addPermission)) {
+            const manifestLines = manifestContent.split('\n');
+            const insertIndex = manifestLines.findIndex(line => line.trim().startsWith('<application'));
+            if (insertIndex > -1) {
+                manifestLines.splice(insertIndex, 0, `    ${addPermission}`);
+                manifestContent = manifestLines.join('\n');
+                console.log(`Added ${addPermission} to AndroidManifest.xml`);
+            }
+        }
+
+        // Write the updated content back to the file
+        fs.writeFileSync(androidManifestPath, manifestContent, 'utf-8');
+        console.log(`AndroidManifest.xml updated successfully for ${store}`);
+    } catch (err) {
+        console.error(`Error updating AndroidManifest.xml for ${store}:`, err);
+    }
+} */
+
+
+
+
+
+
+
+

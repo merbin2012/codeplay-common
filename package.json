@@ -1,0 +1,15 @@
+{
+  "name": "codeplay-common",
+  "version": "1.2.0",
+  "description": "Common build scripts and files",
+  "scripts": {
+	"postinstall": "node scripts/sync-files.js",
+	"preinstall": "node scripts/uninstall.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/merbin2012/codeplay-common.git"
+  },
+  "author": "Codeplay Technologies",
+  "license": "MIT"
+}
