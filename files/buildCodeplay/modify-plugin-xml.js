@@ -10,7 +10,7 @@ const storeId = process.env.VITE_STORE_ID || '1';
 // Determine the framework to use based on storeId
 const framework = storeId === '7'
   ? '<framework src="com.google.android.gms:play-services-ads:$PLAY_SERVICES_VERSION" />'
-  : '<framework src="com.google.android.gms:play-services-ads-lite:$PLAY_SERVICES_VERSION" />';
+  : '<framework src="com.google.android.gms:play-services-ads-lite:24.0.0" />';
 
 // Read and modify the plugin.xml file
 fs.readFile(pluginXmlPath, 'utf8', (err, data) => {

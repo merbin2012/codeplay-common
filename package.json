@@ -1,6 +1,6 @@
 {
   "name": "codeplay-common",
-  "version": "1.2.0",
+  "version": "1.5.5",
   "description": "Common build scripts and files",
   "scripts": {
 	"postinstall": "node scripts/sync-files.js",
